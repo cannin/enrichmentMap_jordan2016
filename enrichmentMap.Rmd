@@ -25,6 +25,7 @@ library(org.Hs.eg.db)
 library(tidygraph)
 library(tidytext)
 library(readxl)
+library(magrittr)
 
 source("modified_clusterProfiler_functions.R")
 
@@ -37,13 +38,12 @@ curVar <- function(x) { deparse(substitute(x)) }
 # Load Data 
 ```{r}
 data(stop_words)
+
 data(geneList, package="DOSE")
 dose_geneList <- geneList
 
-up_erbb2_lo <- read_xlsx("nature19328-s5.xlsx", skip = 2, sheet = "Up in ERBB2 low")
-up_erbb2_hi <- read_xlsx("nature19328-s5.xlsx", skip = 2, sheet = "Up in ERBB2 high")
-
-geneList <- up_erbb2_lo$Symbol
+upErbb2Lo <- read_xlsx("nature19328-s5.xlsx", skip = 2, sheet = "Up in ERBB2 low")
+upErbb2Hi <- read_xlsx("nature19328-s5.xlsx", skip = 2, sheet = "Up in ERBB2 high")
 ```
 
 # Convert Pathway Commons GMT to ClusterProfiler format 
@@ -60,7 +60,7 @@ gmt <- readGmt(tmpFile, returnInfo = TRUE)
 maxTags <- 5
 ```
 
-# C
+# Convert Pathway Commons GMT to clusterProfiler structure
 ```{r}
 geneSetList <- lapply(seq_along(gmt), function(x, n, i) { 
   tmp <- x[[i]]
@@ -75,26 +75,50 @@ pc2name <- tmp[, c("id", "name")]
 ```
 
 # Run Enrichment Analysis 
-## For DOSE 
 ```{r}
-deg <- geneList
-enrichOutput <- enricher(deg, pvalueCutoff=0.05, minGSSize=10, maxGSSize=500, TERM2GENE=pc2gene, TERM2NAME=pc2name)
-a <- enrichOutput@result
+enrichOutput_upErbb2Lo <- enricher(upErbb2Lo$Symbol, pvalueCutoff=0.05, minGSSize=10, maxGSSize=500, TERM2GENE=pc2gene, TERM2NAME=pc2name)
+enrichOutput_upErbb2Lo@result
+
+enrichOutput_upErbb2Hi <- enricher(upErbb2Hi$Symbol, pvalueCutoff=0.05, minGSSize=10, maxGSSize=500, TERM2GENE=pc2gene, TERM2NAME=pc2name)
+enrichOutput_upErbb2Hi@result
 ```
 
 # Plots 
 ## Plot Default EnrichmentMap  
 ```{r}
-em <- emapplot(enrichOutput, showCategory=20)
+em <- emapplot(enrichOutput_upErbb2Lo, showCategory=20)
 em
-
-g <- emapplotModGraph(enrichOutput, showCategory=20)
-plot(g)
 ```
 
 ## Modified EnrichmentMap Plot
+### Extract graph from enricher output
+```{r}
+g_upErbb2Lo <- emapplotModGraph(enrichOutput_upErbb2Lo, showCategory=20)
+g_upErbb2Hi <- emapplotModGraph(enrichOutput_upErbb2Hi, showCategory=20)
+#plot(g)
+```
+
+### Merge graphs
+```{r}
+g_combined <- union(g_upErbb2Lo, g_upErbb2Hi)
+
+# Merge attributes
+V(g_combined)$color <- ifelse(is.na(V(g_combined)$color_1), 
+                              -1*log10(V(g_combined)$color_2), 
+                              log10(V(g_combined)$color_1))
+
+V(g_combined)$size <- ifelse(is.na(V(g_combined)$size_1), V(g_combined)$size_2, V(g_combined)$size_1)
+E(g_combined)$width <- ifelse(is.na(E(g_combined)$width_1), E(g_combined)$width_2, E(g_combined)$width_1)
+
+# vertex_attr(g_combined, "color")
+# vertex_attr(g_combined, "size")
+# edge_attr(g_combined, "width")
+```
+
 ### Modify graph 
 ```{r}
+g <- g_combined
+
 tmp <- components(g) 
 gComponents <- data.frame(name=names(tmp$membership), component=as.numeric(tmp$membership))
 
@@ -105,7 +129,9 @@ g1 <- as_tbl_graph(g)
 nodes <- g1 %>% activate(nodes) %>% as_tibble
 edges <- g1 %>% activate(edges) %>% as_tibble
 nodeOrder <- nodes$name
-limits <- c(min(nodes$color), max(nodes$color))
+#limits <- c(min(nodes$color), max(nodes$color))
+tmp <- max(abs(nodes$color), abs(nodes$color))
+limits <- c(-tmp, tmp)
 
 tmpNodes <- merge(nodes, gComponents, by="name", all.x=TRUE)
 nodesOrdered <- tmpNodes[match(nodeOrder, tmpNodes$name),]
@@ -121,35 +147,44 @@ g2 <- tbl_graph(
 tags <- sapply(1:max(nodesOrdered$component), function(i) {
   #i <- 2
   tmp <- nodesOrdered[nodesOrdered$component == i, "name"]
+  #if(length(tmp) == 1) { 
+  #  tags <- tmp 
+  #} else {
+    #tmp <- gsub("[[:punct:]]", " ", tmp)
+    tmp <- gsub("[^[:alnum:]-]", " ", tmp)
+
+    tmp <- gsub("  ", " ", tmp)
+    tmp <- tmp %>% tolower
+    
+    stopWords <- c(stop_words$word, 
+                   "signaling", "interactions", "cells", "cell", "mediated", 
+                   "involved", "genes")
+    
+    a <- strsplit(tmp, " ") %>% unlist %>% unique 
+    b <- a[!(a %in% stopWords)]
+    b <- b[nchar(b) >= 3]
+    
+    c <- sapply(b, function(x) {
+      grepl(x, tmp) %>% which %>% length 
+    }) %>% sort(decreasing = TRUE)
+    
+    if(max(c) > 1) {
+      d <- c[c > 1] %>% sort(decreasing = TRUE)
+    } else {
+      d <- c %>% sort(decreasing = TRUE)
+    }
+    
+    maxTags <- ifelse(length(d) > maxTags, maxTags, length(d))
+    tags <- paste(names(d)[1:maxTags], collapse = ", ")
+  #}
   
-  tmp <- gsub("[[:punct:]]", " ", tmp)
-  tmp <- gsub("  ", " ", tmp)
-  
-  a <- strsplit(tmp, " ") %>% unlist %>% unique 
-  b <- c(tmp, a) %>% unique
-  b <- a %>% unique
-  b <- b[!(b %in% stop_words$word)]
-  b <- b[nchar(b) > 3]
-  
-  c <- sapply(b, function(x) {
-    grepl(x, tmp) %>% which %>% length 
-  }) %>% sort(decreasing = TRUE)
-  
-  if(max(c) > 1) {
-    d <- c[c > 1] %>% sort(decreasing = TRUE)
-  } else {
-    d <- c %>% sort(decreasing = TRUE)
-  }
-  
-  maxTags <- ifelse(length(d) > maxTags, maxTags, length(d))
-  tags <- paste(names(d)[1:maxTags], collapse = ", ")
   tags
 })
 
-tags <- paste0("Tags: ", tags)
+tags <- data.frame(component=1:max(nodesOrdered$component), tag=paste0("Tags: ", tags), stringsAsFactors = FALSE)
 ```
 
-### Plot Default EnrichmentMap
-```{r}
-emapplotModPlot(g2, componentHighlight=1:3, tags=tags, limits=limits)
+### Plot Modified EnrichmentMap
+```{r, fig.width=15, fig.height=15}
+emapplotModPlot(g2, limits=limits, tags=tags)
 ```
