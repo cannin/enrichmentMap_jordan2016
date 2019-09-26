@@ -100,7 +100,7 @@ g_upErbb2Hi <- emapplotModGraph(enrichOutput_upErbb2Hi, showCategory=20)
 
 ### Merge graphs
 ```{r}
-g_combined <- union(g_upErbb2Lo, g_upErbb2Hi)
+g_combined <- g_upErbb2Lo %u% g_upErbb2Hi
 
 # Merge attributes
 V(g_combined)$color <- ifelse(is.na(V(g_combined)$color_1), 
